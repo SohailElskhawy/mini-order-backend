@@ -20,17 +20,17 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
     await prisma.$disconnect();
   });
 
-  describe("Product Catalog", () => {
-    it("GET /products returns seeded products with prices and stock = 10", async () => {
+  describe("Product Catalog (GET /products)", () => {
+    it("returns array of 5 products with current prices and available stock = 10", async () => {
       const res = await request(app).get("/products");
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toBeDefined();
-      expect(res.body.data.length).toBe(5);
-      expect(res.body.data[0]).toHaveProperty("id");
-      expect(res.body.data[0]).toHaveProperty("name");
-      expect(res.body.data[0]).toHaveProperty("priceInCents");
-      expect(res.body.data[0].stock).toBe(10);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBe(5);
+      expect(res.body[0]).toHaveProperty("id");
+      expect(res.body[0]).toHaveProperty("name");
+      expect(res.body[0]).toHaveProperty("priceInCents");
+      expect(res.body[0].stock).toBe(10);
     });
   });
 
@@ -45,9 +45,9 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(201);
-      expect(res.body.data.status).toBe("placed");
-      expect(res.body.data.items.length).toBe(1);
-      expect(res.body.data.items[0].quantity).toBe(2);
+      expect(res.body.status).toBe("placed");
+      expect(res.body.items.length).toBe(1);
+      expect(res.body.items[0].quantity).toBe(2);
 
       // Verify stock in database
       const product = await prisma.product.findUnique({ where: { id: 1 } });
@@ -69,9 +69,10 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(201);
-      expect(res.body.data.totalInCents).toBe(3997);
-      expect(res.body.data.items[0].unitPriceInCents).toBe(999);
-      expect(res.body.data.items[1].unitPriceInCents).toBe(1999);
+      expect(res.body.totalInCents).toBe(3997);
+      expect(res.body.total).toBe(3997);
+      expect(res.body.items[0].unitPriceInCents).toBe(999);
+      expect(res.body.items[1].unitPriceInCents).toBe(1999);
     });
 
     // Case 3: Ordering more than available stock returns 409.
@@ -84,7 +85,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(409);
-      expect(res.body.error.message).toContain("Insufficient stock");
+      expect(res.body.error).toContain("Insufficient stock");
 
       // Verify stock remains untouched at 10
       const product = await prisma.product.findUnique({ where: { id: 1 } });
@@ -131,7 +132,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(createRes.status).toBe(201);
-      const orderId = createRes.body.data.id;
+      const orderId = createRes.body.id;
 
       // Stock should now be 7
       let product = await prisma.product.findUnique({ where: { id: 1 } });
@@ -140,7 +141,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
       // 2. Cancel the order
       const cancelRes = await request(app).post(`/orders/${orderId}/cancel`);
       expect(cancelRes.status).toBe(200);
-      expect(cancelRes.body.data.status).toBe("cancelled");
+      expect(cancelRes.body.status).toBe("cancelled");
 
       // 3. Verify stock restored to 10
       product = await prisma.product.findUnique({ where: { id: 1 } });
@@ -156,11 +157,12 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
           customerEmail: "student@example.com",
           items: [{ productId: 1, quantity: 4 }],
         });
-      const orderId = createRes.body.data.id;
+      const orderId = createRes.body.id;
 
       // 2. First cancellation (succeeds, stock: 6 -> 10)
       const cancel1 = await request(app).post(`/orders/${orderId}/cancel`);
       expect(cancel1.status).toBe(200);
+      expect(cancel1.body.status).toBe("cancelled");
 
       let product = await prisma.product.findUnique({ where: { id: 1 } });
       expect(product?.stock).toBe(10);
@@ -168,7 +170,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
       // 3. Second cancellation (must fail with 409 Conflict)
       const cancel2 = await request(app).post(`/orders/${orderId}/cancel`);
       expect(cancel2.status).toBe(409);
-      expect(cancel2.body.error.message).toContain("already cancelled");
+      expect(cancel2.body.error).toContain("already cancelled");
 
       // 4. Verify stock is STILL 10 (not 14!)
       product = await prisma.product.findUnique({ where: { id: 1 } });
@@ -186,6 +188,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(400);
+      expect(res.body.error).toBeDefined();
     });
 
     it("returns 400 when items array is empty", async () => {
@@ -197,6 +200,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(400);
+      expect(res.body.error).toBeDefined();
     });
 
     it("returns 400 when quantity is zero or negative", async () => {
@@ -208,6 +212,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(400);
+      expect(res.body.error).toBeDefined();
     });
 
     it("returns 400 when duplicate productId is provided in items", async () => {
@@ -222,7 +227,7 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error.details[0].message).toContain("Duplicate productId");
+      expect(res.body.error).toContain("Duplicate productId");
     });
 
     it("returns 404 when ordering a non-existent product", async () => {
@@ -234,16 +239,19 @@ describe("Mini Order & Inventory API - Correctness & ACID Tests", () => {
         });
 
       expect(res.status).toBe(404);
+      expect(res.body.error).toContain("does not exist");
     });
 
     it("returns 404 when GET /orders/:id does not exist", async () => {
       const res = await request(app).get("/orders/999999");
       expect(res.status).toBe(404);
+      expect(res.body.error).toContain("not found");
     });
 
     it("returns 404 when cancelling a non-existent order", async () => {
       const res = await request(app).post("/orders/999999/cancel");
       expect(res.status).toBe(404);
+      expect(res.body.error).toContain("not found");
     });
   });
 

@@ -5,37 +5,35 @@ import { AppError } from "../errors/app-errors.js";
 export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
   if (err instanceof AppError) {
     res.status(err.statusCode).json({
-      error: {
-        message: err.message,
-        statusCode: err.statusCode,
-        details: err.details ?? null,
-      },
+      error: err.message,
+      message: err.message,
+      statusCode: err.statusCode,
+      details: err.details ?? null,
     });
     return;
   }
 
   if (err instanceof ZodError) {
-    const formattedErrors = err.issues.map((issue) => ({
+    const errorDetails = err.issues.map((issue) => ({
       path: issue.path.join("."),
       message: issue.message,
     }));
+    const message = err.issues.map((i) => i.message).join("; ") || "Validation failed";
 
     res.status(400).json({
-      error: {
-        message: "Validation failed",
-        statusCode: 400,
-        details: formattedErrors,
-      },
+      error: message,
+      message: message,
+      statusCode: 400,
+      details: errorDetails,
     });
     return;
   }
 
   if (err instanceof SyntaxError && "body" in err) {
     res.status(400).json({
-      error: {
-        message: "Malformed JSON payload",
-        statusCode: 400,
-      },
+      error: "Malformed JSON payload",
+      message: "Malformed JSON payload",
+      statusCode: 400,
     });
     return;
   }
@@ -43,9 +41,8 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
   console.error("Unhandled exception:", err);
 
   res.status(500).json({
-    error: {
-      message: "Internal server error",
-      statusCode: 500,
-    },
+    error: "Internal Server Error",
+    message: "Internal Server Error",
+    statusCode: 500,
   });
 };

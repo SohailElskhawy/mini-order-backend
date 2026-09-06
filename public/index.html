@@ -441,8 +441,8 @@
           customerEmail: "cancel.user@example.com",
           items: [{ productId: 3, quantity: 4 }]
         });
-        if (createRes && createRes.data && createRes.data.data) {
-          const id = createRes.data.data.id;
+        if (createRes && createRes.data) {
+          const id = createRes.data.id || createRes.data?.data?.id;
           setTimeout(async () => {
             await executeApiCall('POST', `/orders/${id}/cancel`);
           }, 800);
@@ -453,8 +453,8 @@
           customerEmail: "double.cancel@example.com",
           items: [{ productId: 4, quantity: 2 }]
         });
-        if (createRes && createRes.data && createRes.data.data) {
-          const id = createRes.data.data.id;
+        if (createRes && createRes.data) {
+          const id = createRes.data.id || createRes.data?.data?.id;
           await executeApiCall('POST', `/orders/${id}/cancel`);
           // Try cancelling again immediately!
           setTimeout(async () => {

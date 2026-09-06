@@ -5,10 +5,8 @@ export class OrderController {
   async createOrder(req: Request, res: Response, next: NextFunction) {
     try {
       const order = await orderService.createOrder(req.body);
-      res.status(201).json({
-        message: "Order placed successfully",
-        data: order,
-      });
+      // Directly return 201 with order ID, items, total, and status
+      res.status(201).json(order);
     } catch (error) {
       next(error);
     }
@@ -18,9 +16,8 @@ export class OrderController {
     try {
       const id = Number(req.params.id);
       const order = await orderService.getOrderById(id);
-      res.status(200).json({
-        data: order,
-      });
+      // Directly return the order and its items
+      res.status(200).json(order);
     } catch (error) {
       next(error);
     }
@@ -30,10 +27,8 @@ export class OrderController {
     try {
       const id = Number(req.params.id);
       const result = await orderService.cancelOrder(id);
-      res.status(200).json({
-        message: result.message,
-        data: result,
-      });
+      // Directly return cancelled order
+      res.status(200).json(result);
     } catch (error) {
       next(error);
     }

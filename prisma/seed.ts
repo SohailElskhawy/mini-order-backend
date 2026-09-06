@@ -28,28 +28,25 @@ export async function seedProducts(force: boolean = false) {
 
   const data = (await response.json()) as DummyJsonResponse;
 
-  console.log(`Fetched ${data.products.length} products. Seeding into PostgreSQL...`);
+  console.log(`Fetched ${data.products.length} products. Batch seeding into PostgreSQL...`);
 
-  for (const product of data.products) {
-    const priceInCents = Math.round(product.price * 100);
-    
-    await prisma.product.upsert({
-      where: { id: product.id },
-      update: {
-        name: product.title,
-        priceInCents,
-        stock: 10,
-      },
-      create: {
-        id: product.id,
-        name: product.title,
-        priceInCents,
-        stock: 10,
-      },
-    });
+  // Batch upsert in a single SQL statement (zero for-loops)
+  const values = data.products
+    .map((product) => {
+      const priceInCents = Math.round(product.price * 100);
+      const escapedName = product.title.replace(/'/g, "''");
+      return `(${product.id}::int, '${escapedName}', ${priceInCents}::int, 10::int)`;
+    })
+    .join(", ");
 
-    console.log(`✓ Seeded Product [${product.id}]: "${product.title}" - $${(priceInCents / 100).toFixed(2)} (${priceInCents} cents), Stock: 10`);
-  }
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO products (id, name, "priceInCents", stock)
+    VALUES ${values}
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      "priceInCents" = EXCLUDED."priceInCents",
+      stock = EXCLUDED.stock;
+  `);
 
   // Synchronize PostgreSQL sequence with max id
   try {
@@ -60,11 +57,11 @@ export async function seedProducts(force: boolean = false) {
     // Non-fatal if sequence cannot be reset
   }
 
-  console.log("Seeding complete! Database is now the source of truth.");
+  console.log("Batch seeding complete! Database is now the source of truth.");
 }
 
 if (process.argv[1] && process.argv[1].endsWith("seed.ts")) {
-  seedProducts()
+  seedProducts(true)
     .catch((error) => {
       console.error("Error during seeding:", error);
       process.exit(1);

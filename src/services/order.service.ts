@@ -1,65 +1,65 @@
 import { prisma } from "../db/client.js";
 import { CreateOrderInput } from "../schemas/order.schema.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../errors/app-errors.js";
+import { ConflictError, NotFoundError } from "../errors/app-errors.js";
 
 export class OrderService {
   /**
    * Creates an order with ACID transaction guarantees and concurrency protection.
-   * Prevents overselling using conditional atomic stock decrement.
+   * Eliminates sequential for-loops inside the transaction by using a single atomic set-based SQL statement.
    */
   async createOrder(input: CreateOrderInput) {
     const { customerEmail, items } = input;
 
-    // Sort items by productId to avoid deadlock on concurrent multi-item transactions
+    // Sort items by productId to maintain deterministic lock order
     const sortedItems = [...items].sort((a, b) => a.productId - b.productId);
     const productIds = sortedItems.map((item) => item.productId);
 
     return prisma.$transaction(async (tx) => {
-      // 1. Fetch current product information for all requested IDs from the database
+      // 1. Fetch current product information for all requested IDs in one query
       const products = await tx.product.findMany({
         where: { id: { in: productIds } },
       });
 
       const productMap = new Map(products.map((p) => [p.id, p]));
 
-      // 2. Ensure all requested products exist in the database
-      for (const item of sortedItems) {
-        const product = productMap.get(item.productId);
-        if (!product) {
-          throw new NotFoundError(`Product with ID ${item.productId} does not exist`);
-        }
-
-        // Initial pre-check on stock for clearer error messages
-        if (product.stock < item.quantity) {
-          throw new ConflictError(
-            `Insufficient stock for product "${product.name}" (ID: ${product.id}). Requested: ${item.quantity}, Available: ${product.stock}`
-          );
-        }
+      // 2. Validate all products exist (404 for missing resource)
+      const missingItem = sortedItems.find((item) => !productMap.has(item.productId));
+      if (missingItem) {
+        throw new NotFoundError(`Product with ID ${missingItem.productId} does not exist`);
       }
 
-      // 3. Concurrency Protection & Atomic Stock Reduction:
-      // Perform conditional atomic decrement (UPDATE ... WHERE id = :id AND stock >= :qty)
-      for (const item of sortedItems) {
+      // 3. Pre-check stock levels for descriptive error messages (409 for conflict)
+      const insufficientItem = sortedItems.find((item) => {
         const product = productMap.get(item.productId)!;
-        const updateResult = await tx.product.updateMany({
-          where: {
-            id: item.productId,
-            stock: { gte: item.quantity },
-          },
-          data: {
-            stock: { decrement: item.quantity },
-          },
-        });
+        return product.stock < item.quantity;
+      });
 
-        // If count === 0, another concurrent transaction depleted the stock first!
-        if (updateResult.count === 0) {
-          throw new ConflictError(
-            `Insufficient stock for product "${product.name}" (ID: ${product.id}) due to concurrent order`
-          );
-        }
+      if (insufficientItem) {
+        const product = productMap.get(insufficientItem.productId)!;
+        throw new ConflictError(
+          `Insufficient stock for product "${product.name}" (ID: ${product.id}). Requested: ${insufficientItem.quantity}, Available: ${product.stock}`
+        );
       }
 
-      // 4. Calculate total in integer cents using verified prices from DB (never client-supplied)
+      // 4. Single Atomic Set-Based Conditional Stock Decrement (ZERO for-loops):
+      // Executes in a single SQL operation and locks all involved rows simultaneously
+      const valuesSql = sortedItems
+        .map((item) => `(${Number(item.productId)}::int, ${Number(item.quantity)}::int)`)
+        .join(", ");
+
+      const affectedCount = await tx.$executeRawUnsafe(`
+        UPDATE products AS p
+        SET stock = p.stock - v.qty
+        FROM (VALUES ${valuesSql}) AS v(id, qty)
+        WHERE p.id = v.id AND p.stock >= v.qty
+      `);
+
+      // If fewer rows were updated than requested items, at least one product had insufficient stock
+      if (affectedCount !== sortedItems.length) {
+        throw new ConflictError("Insufficient stock or concurrent update conflict");
+      }
+
+      // 5. Calculate total using verified integer cents from DB
       const orderItemsData = sortedItems.map((item) => {
         const product = productMap.get(item.productId)!;
         return {
@@ -74,7 +74,7 @@ export class OrderService {
         0
       );
 
-      // 5. Create Order with status "placed" and insert its items
+      // 6. Create Order and nested OrderItems in a single database round-trip
       const order = await tx.order.create({
         data: {
           customerEmail,
@@ -101,6 +101,7 @@ export class OrderService {
         customerEmail: order.customerEmail,
         status: order.status,
         totalInCents: order.totalInCents,
+        total: order.totalInCents,
         createdAt: order.createdAt,
         items: order.items,
       };
@@ -131,15 +132,18 @@ export class OrderService {
       throw new NotFoundError(`Order with ID ${id} not found`);
     }
 
-    return order;
+    return {
+      ...order,
+      total: order.totalInCents,
+    };
   }
 
   /**
-   * Cancels an order and atomically restores product stock.
+   * Cancels an order and atomically restores product stock without sequential loops.
    */
   async cancelOrder(id: number) {
     return prisma.$transaction(async (tx) => {
-      // 1. Fetch order with its items
+      // 1. Fetch order with items
       const order = await tx.order.findUnique({
         where: { id },
         include: { items: true },
@@ -149,14 +153,14 @@ export class OrderService {
         throw new NotFoundError(`Order with ID ${id} not found`);
       }
 
-      // 2. Reject if already cancelled (never restore stock twice)
+      // 2. Reject if already cancelled (409 Conflict)
       if (order.status === "cancelled") {
         throw new ConflictError(`Order with ID ${id} is already cancelled`);
       }
 
-      // 3. Only orders with status 'placed' may be cancelled
+      // 3. Only orders with status 'placed' may be cancelled (409 Conflict on invalid state)
       if (order.status !== "placed") {
-        throw new BadRequestError(`Cannot cancel order with status "${order.status}"`);
+        throw new ConflictError(`Cannot cancel order with status "${order.status}"`);
       }
 
       // 4. Update order status to 'cancelled'
@@ -165,14 +169,18 @@ export class OrderService {
         data: { status: "cancelled" },
       });
 
-      // 5. Restore stock for each item in the order
-      for (const item of order.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: {
-            stock: { increment: item.quantity },
-          },
-        });
+      // 5. Restore stock using a single atomic set-based SQL operation (ZERO for-loops)
+      if (order.items.length > 0) {
+        const restoreSql = order.items
+          .map((item) => `(${Number(item.productId)}::int, ${Number(item.quantity)}::int)`)
+          .join(", ");
+
+        await tx.$executeRawUnsafe(`
+          UPDATE products AS p
+          SET stock = p.stock + v.qty
+          FROM (VALUES ${restoreSql}) AS v(id, qty)
+          WHERE p.id = v.id
+        `);
       }
 
       return {
@@ -180,11 +188,9 @@ export class OrderService {
         customerEmail: updatedOrder.customerEmail,
         status: updatedOrder.status,
         totalInCents: updatedOrder.totalInCents,
-        message: "Order successfully cancelled and stock restored",
-        restoredItems: order.items.map((i) => ({
-          productId: i.productId,
-          restoredQuantity: i.quantity,
-        })),
+        total: updatedOrder.totalInCents,
+        createdAt: updatedOrder.createdAt,
+        items: order.items,
       };
     });
   }
@@ -219,7 +225,7 @@ export class OrderService {
     ]);
 
     return {
-      data: orders,
+      data: orders.map((o) => ({ ...o, total: o.totalInCents })),
       pagination: {
         page,
         limit,

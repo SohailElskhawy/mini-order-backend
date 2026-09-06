@@ -5,9 +5,8 @@ export class ProductController {
   async getProducts(req: Request, res: Response, next: NextFunction) {
     try {
       const products = await productService.getAllProducts();
-      res.status(200).json({
-        data: products,
-      });
+      // Directly return the array of products as per specification
+      res.status(200).json(products);
     } catch (error) {
       next(error);
     }
@@ -17,10 +16,7 @@ export class ProductController {
     try {
       const stock = req.body?.stock ? Number(req.body.stock) : 10;
       const products = await productService.resetStock(stock);
-      res.status(200).json({
-        message: `Stock for all products reset to ${stock}`,
-        data: products,
-      });
+      res.status(200).json(products);
     } catch (error) {
       next(error);
     }
