@@ -2,7 +2,6 @@ databases:
   - name: mini-order-db
     plan: free
     databaseName: mini_order_db
-    user: postgres
 
 services:
   - type: web
